@@ -815,6 +815,260 @@ function FamiliaScreen({ elderId, elderName, onBack }) {
   )
 }
 
+/* ---------- tela do idoso (assistente de voz) ---------- */
+function playBeep(freq = 880, duration = 100) {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext
+    const ctx = new Ctx()
+    const osc = ctx.createOscillator()
+    const gain = ctx.createGain()
+    osc.frequency.value = freq
+    osc.connect(gain)
+    gain.connect(ctx.destination)
+    gain.gain.setValueAtTime(0.15, ctx.currentTime)
+    osc.start()
+    osc.stop(ctx.currentTime + duration / 1000)
+    osc.onended = () => ctx.close()
+  } catch {}
+}
+
+function dateFull() {
+  return new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' })
+}
+
+function pickFamilyName(text, family) {
+  const t = text.toLowerCase()
+  return family.find((m) => t.includes(m.name.toLowerCase().split(' ')[0]))
+}
+
+function AssistantScreen({ elderId, elderName, onBack }) {
+  const [messages, setMessages] = useState([
+    { from: 'bot', text: `Oi, eu sou o Bio! Toque em "Ativar modo mãos-livres" uma vez. Depois disso não precisa mais tocar em nada — é só falar.` },
+  ])
+  const [input, setInput] = useState('')
+  const [pending, setPending] = useState(null)
+  const [listening, setListening] = useState(false)
+  const [handsFree, setHandsFree] = useState(false)
+  const [family, setFamily] = useState([])
+
+  const handsFreeRef = useRef(false)
+  const recognitionRef = useRef(null)
+  const timeoutRef = useRef(null)
+  const scrollRef = useRef(null)
+
+  useEffect(() => { loadFamily() }, [elderId])
+  useEffect(() => { scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }) }, [messages])
+  useEffect(() => {
+    return () => {
+      handsFreeRef.current = false
+      if (timeoutRef.current) clearTimeout(timeoutRef.current)
+      try { recognitionRef.current && recognitionRef.current.stop() } catch {}
+      try { window.speechSynthesis && window.speechSynthesis.cancel() } catch {}
+    }
+  }, [])
+
+  async function loadFamily() {
+    const { data: accessRows } = await supabase.from('elder_access').select('*').eq('elder_id', elderId)
+    const { data: profilesData } = await supabase.from('profiles').select('*')
+    const merged = (accessRows || []).map((row) => {
+      const acc = (profilesData || []).find((p) => p.id === row.account_id)
+      return acc ? { id: acc.id, name: acc.name, relation: row.relation } : null
+    }).filter(Boolean)
+    setFamily(merged)
+  }
+
+  function scheduleListen(delay) {
+    if (timeoutRef.current) clearTimeout(timeoutRef.current)
+    timeoutRef.current = setTimeout(() => { if (handsFreeRef.current) beginListeningCycle() }, delay)
+  }
+
+  function reply(text) {
+    setMessages((m) => [...m, { from: 'bot', text }])
+    try {
+      if (!window.speechSynthesis) { if (handsFreeRef.current) scheduleListen(500); return }
+      window.speechSynthesis.cancel()
+      const u = new SpeechSynthesisUtterance(text)
+      u.lang = 'pt-BR'
+      u.rate = 0.95
+      u.onend = () => { if (handsFreeRef.current) scheduleListen(500) }
+      u.onerror = () => { if (handsFreeRef.current) scheduleListen(500) }
+      window.speechSynthesis.speak(u)
+    } catch {
+      if (handsFreeRef.current) scheduleListen(500)
+    }
+  }
+
+  async function handleCommand(raw) {
+    const text = raw.trim()
+    if (!text) return
+    setMessages((m) => [...m, { from: 'user', text }])
+    const t = text.toLowerCase()
+    const isYes = /\b(sim|quero|isso|pode|manda|confirma|correto|é isso)\b/.test(t)
+
+    if (pending) {
+      if (pending.type === 'confirm_help') {
+        if (isYes || /família|familia|emerg|socorro/.test(t)) {
+          await supabase.from('activity_log').insert({ elder_id: elderId, type: 'alert', text: 'Pediu ajuda e confirmou o alerta.', actor: elderName })
+          reply('Pronto, já avisei sua família.')
+        } else {
+          reply('Tudo bem, não avisei ninguém. Estou aqui se precisar.')
+        }
+        setPending(null); return
+      }
+      if (pending.type === 'confirm_call') {
+        if (isYes) {
+          await supabase.from('activity_log').insert({ elder_id: elderId, type: 'call', text: `Ligação para ${pending.target.name}`, actor: elderName })
+          reply(`Ligando para ${pending.target.name} agora.`)
+        } else {
+          reply('Ok, não vou ligar.')
+        }
+        setPending(null); return
+      }
+    }
+
+    if (/preciso de ajuda|me ajuda\b|socorro|estou passando mal|caí|cai no chão/.test(t)) {
+      setPending({ type: 'confirm_help' })
+      reply('Quer que eu avise a família ou peça socorro? Diga sim para avisar.')
+      return
+    }
+    if (/^(oi|olá|ola|bom dia|boa tarde|boa noite)\b/.test(t)) {
+      reply(elderName ? `Oi, ${elderName.split(' ')[0]}! Como posso ajudar?` : 'Oi! Como posso ajudar?')
+      return
+    }
+    if (/que horas|hora é|horas são|sabe (a )?hora|me diz a hora/.test(t)) {
+      reply(`Agora são ${new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}.`)
+      return
+    }
+    if (/que dia|data de hoje|dia é hoje|dia hoje/.test(t)) {
+      reply(`Hoje é ${dateFull()}.`)
+      return
+    }
+    if (/tempo|clima|vai chover|tá frio|esta frio|está frio/.test(t)) {
+      reply('Hoje o tempo está agradável, por volta de 26 graus, com sol entre nuvens. (Exemplo — depois conectamos uma previsão real.)')
+      return
+    }
+    if (/o que eu tenho hoje|compromisso|minha agenda|tenho algo hoje/.test(t)) {
+      const { data } = await supabase.from('reminders').select('*').eq('elder_id', elderId).eq('done', false)
+      const list = data || []
+      if (list.length === 0) reply('Você não tem nada marcado por enquanto.')
+      else reply(`Você tem: ${list.map(formatReminder).join('; ')}.`)
+      return
+    }
+    if (/lig(a|ue|ar|ando)|telefon(a|e|ar)|chama (pra|para)/.test(t)) {
+      const person = pickFamilyName(t, family)
+      if (person) {
+        setPending({ type: 'confirm_call', target: person })
+        reply(`Quer que eu ligue para ${person.name} agora? Diga sim para confirmar.`)
+      } else {
+        reply('Pra quem você quer ligar? Diga o nome, como "ligar para Ana".')
+      }
+      return
+    }
+    if (/lembr/.test(t)) {
+      const dt = parseDateTime(text)
+      const cleaned = cleanReminderText(text) || text
+      await supabase.from('reminders').insert({ elder_id: elderId, text: cleaned, when_label: dt.when, hour: dt.hour, minute: dt.minute, created_by: elderName || 'idoso', done: false })
+      reply('Prontinho, vou lembrar você disso.')
+      return
+    }
+    if (/conversar|bate.?papo|\bpapo\b|quero falar|estou sozinho|tô sozinho|to sozinho/.test(t)) {
+      reply('Claro, adoro conversar. Me conta, como você está se sentindo hoje?')
+      return
+    }
+
+    reply('Ainda não sei fazer isso, mas já anotei para a família melhorar isso comigo.')
+  }
+
+  function beginListeningCycle() {
+    const SR = window.webkitSpeechRecognition || window.SpeechRecognition
+    if (!SR) {
+      handsFreeRef.current = false; setHandsFree(false)
+      reply('O microfone contínuo não está disponível neste navegador.')
+      return
+    }
+    try {
+      const rec = new SR()
+      rec.lang = 'pt-BR'
+      rec.continuous = false
+      rec.interimResults = false
+      rec.onstart = () => { setListening(true); playBeep(880, 100) }
+      rec.onend = () => { setListening(false); if (handsFreeRef.current) scheduleListen(600) }
+      rec.onresult = (e) => { handleCommand(e.results[0][0].transcript) }
+      rec.onerror = (e) => {
+        setListening(false)
+        if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+          handsFreeRef.current = false; setHandsFree(false)
+          reply('Perdi a permissão do microfone. Alguém precisa ativar o modo mãos-livres de novo.')
+          return
+        }
+        if (handsFreeRef.current) scheduleListen(900)
+      }
+      recognitionRef.current = rec
+      rec.start()
+    } catch {
+      if (handsFreeRef.current) scheduleListen(900)
+    }
+  }
+
+  function activateHandsFree() {
+    handsFreeRef.current = true; setHandsFree(true)
+    reply('Modo mãos-livres ativado. Pode falar comigo a qualquer momento, sem tocar em nada.')
+  }
+  function deactivateHandsFree() {
+    handsFreeRef.current = false; setHandsFree(false)
+    if (timeoutRef.current) clearTimeout(timeoutRef.current)
+    try { recognitionRef.current && recognitionRef.current.stop() } catch {}
+  }
+
+  return (
+    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: C.inkBg }}>
+      <style>{`@keyframes ring-pulse { 0% { box-shadow: 0 0 0 0 rgba(232,163,61,0.45);} 70% { box-shadow: 0 0 0 18px rgba(232,163,61,0);} 100% { box-shadow: 0 0 0 0 rgba(232,163,61,0);} } .ring-pulse { animation: ring-pulse 2.2s infinite; }`}</style>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '16px 20px' }}>
+        <button onClick={onBack} style={{ padding: 8, borderRadius: 999, background: 'rgba(255,255,255,0.08)', border: 'none', color: C.paper, fontSize: 16 }}>←</button>
+        <h1 style={{ fontSize: 20, fontWeight: 600, color: C.paper, margin: 0 }}>Bio</h1>
+      </div>
+
+      <div ref={scrollRef} style={{ flex: 1, overflowY: 'auto', padding: '8px 20px' }}>
+        {messages.map((m, i) => (
+          <div key={i} style={{ display: 'flex', justifyContent: m.from === 'user' ? 'flex-end' : 'flex-start', marginBottom: 10 }}>
+            <div style={{ maxWidth: '85%', padding: '12px 16px', borderRadius: 18, fontSize: 17, lineHeight: 1.35, background: m.from === 'user' ? C.amber : '#1C332F', color: m.from === 'user' ? C.inkBg : C.paper }}>
+              {m.text}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {!handsFree ? (
+        <div style={{ padding: '0 20px 16px' }}>
+          <button onClick={activateHandsFree} style={{ width: '100%', padding: 18, borderRadius: 18, fontSize: 17, fontWeight: 700, background: C.amber, color: C.inkBg, border: 'none' }}>
+            🎙️ Ativar modo mãos-livres
+          </button>
+          <p style={{ fontSize: 11, textAlign: 'center', marginTop: 8, color: '#F6D08C', opacity: 0.8 }}>Toque uma vez. Depois disso ele não precisa mais tocar em nada.</p>
+        </div>
+      ) : (
+        <div style={{ padding: '0 20px 12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span className={listening ? 'ring-pulse' : ''} style={{ display: 'inline-block', width: 12, height: 12, borderRadius: 999, background: listening ? C.amber : '#223B36' }} />
+            <span style={{ fontSize: 14, color: '#F6D08C' }}>{listening ? 'Ouvindo…' : 'Mãos-livres ativo'}</span>
+          </div>
+          <button onClick={deactivateHandsFree} style={{ fontSize: 12, padding: '8px 12px', borderRadius: 999, background: '#223B36', color: C.paper, border: 'none', opacity: 0.7 }}>Desativar</button>
+        </div>
+      )}
+
+      <div style={{ padding: '0 20px 24px', display: 'flex', gap: 10 }}>
+        <input
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') { handleCommand(input); setInput('') } }}
+          placeholder="Ou digite aqui (pra testar)…"
+          style={{ flex: 1, padding: 16, borderRadius: 18, fontSize: 16, background: '#1C332F', color: C.paper, border: '1px solid rgba(255,255,255,0.08)' }}
+        />
+        <button onClick={() => { handleCommand(input); setInput('') }} style={{ padding: '0 18px', borderRadius: 999, background: '#223B36', border: 'none', color: '#F6D08C', fontSize: 18 }}>➤</button>
+      </div>
+    </div>
+  )
+}
+
 /* ---------- app principal ---------- */
 export default function App() {
   const [loading, setLoading] = useState(true)
@@ -933,11 +1187,14 @@ export default function App() {
     return <FamiliaScreen elderId={currentElderId} elderName={currentElder ? currentElder.name : ''} onBack={() => setElderView('home')} />
   }
 
-  if (elderView === 'idoso' || elderView === 'cuidadora') {
-    const labels = { idoso: `Tela de ${currentElder ? currentElder.name.split(' ')[0] : 'Idoso'}`, cuidadora: 'Área da Cuidadora' }
+  if (elderView === 'idoso') {
+    return <AssistantScreen elderId={currentElderId} elderName={currentElder ? currentElder.name : ''} onBack={() => setElderView('home')} />
+  }
+
+  if (elderView === 'cuidadora') {
     return (
       <div style={{ minHeight: '100vh', background: C.paper }}>
-        <TopBar title={labels[elderView]} onBack={() => setElderView('home')} />
+        <TopBar title="Área da Cuidadora" onBack={() => setElderView('home')} />
         <div style={{ padding: 24 }}>
           <p style={{ fontSize: 15, color: C.textMuted }}>Essa tela ainda está sendo construída — chega em breve.</p>
         </div>
