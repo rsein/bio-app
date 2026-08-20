@@ -854,6 +854,7 @@ function AssistantScreen({ elderId, elderName, onBack }) {
   const handsFreeRef = useRef(false)
   const recognitionRef = useRef(null)
   const timeoutRef = useRef(null)
+  const gotResultRef = useRef(false)
   const scrollRef = useRef(null)
 
   useEffect(() => { loadFamily() }, [elderId])
@@ -991,14 +992,16 @@ function AssistantScreen({ elderId, elderName, onBack }) {
       rec.lang = 'pt-BR'
       rec.continuous = false
       rec.interimResults = false
+      gotResultRef.current = false
       rec.onstart = () => { setListening(true); playBeep(880, 100) }
       rec.onend = () => {
         setListening(false)
-        // único lugar que reagenda a escuta — evita reagendar duas vezes
-        // (onerror + onend disparando quase juntos), que causava o "pisca-pisca"
-        if (handsFreeRef.current) scheduleListen(900)
+        // só reagenda por aqui quando NÃO captou nada (silêncio) — se captou,
+        // quem reagenda é a resposta falada (depois de terminar de falar),
+        // pra nunca ligar o microfone de novo enquanto o Bio ainda está respondendo
+        if (handsFreeRef.current && !gotResultRef.current) scheduleListen(900)
       }
-      rec.onresult = (e) => { handleCommand(e.results[0][0].transcript) }
+      rec.onresult = (e) => { gotResultRef.current = true; handleCommand(e.results[0][0].transcript) }
       rec.onerror = (e) => {
         setListening(false)
         if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
