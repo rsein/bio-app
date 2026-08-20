@@ -19,9 +19,12 @@ const C = {
   textMuted: '#5F726D',
 }
 
-function TopBar({ title, onLogout }) {
+function TopBar({ title, onBack, onLogout }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', padding: '16px 20px', color: C.textDark }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '16px 20px', color: C.textDark }}>
+      {onBack && (
+        <button onClick={onBack} style={{ padding: 8, borderRadius: 999, background: C.tealLine, border: 'none', fontSize: 16 }}>←</button>
+      )}
       <h1 style={{ fontSize: 20, fontWeight: 600, flex: 1, margin: 0 }}>{title}</h1>
       {onLogout && (
         <button
@@ -315,6 +318,195 @@ function MeusIdososScreen({ elders, onSelectElder, onAddElder, onLogout }) {
   )
 }
 
+/* ---------- menu principal (dentro de um idoso) ---------- */
+function HomeMenu({ elder, kindLabel, onNavigate, onSwitchElder, onLogout, isAdmin }) {
+  const items = [
+    { key: 'idoso', label: `Tela de ${elder ? elder.name.split(' ')[0] : 'Idoso'}`, desc: 'Assistente por voz', icon: '🎙️', dark: true },
+    { key: 'familia', label: 'Painel da Família', desc: 'Lembretes, remédios, rotina', icon: '👨‍👩‍👦' },
+    { key: 'cuidadora', label: 'Área da Cuidadora', desc: 'Checklist do dia', icon: '🩺' },
+    ...(isAdmin ? [{ key: 'cadastro', label: 'Cadastrar Família', desc: 'Convites e acesso', icon: '➕' }] : []),
+  ]
+  return (
+    <div style={{ minHeight: '100vh', paddingBottom: 60, background: C.paper }}>
+      <div style={{ padding: '32px 20px 8px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+        <div>
+          <p style={{ fontSize: 13, fontWeight: 600, letterSpacing: 2, textTransform: 'uppercase', color: C.teal, margin: 0 }}>Bio</p>
+          <h1 style={{ fontSize: 26, fontWeight: 600, margin: '4px 0 0', color: C.textDark }}>{elder ? elder.name : '...'}</h1>
+        </div>
+        <button onClick={onLogout} style={{ fontSize: 13, padding: '8px 14px', borderRadius: 999, background: C.tealLine, border: 'none', color: C.tealDark }}>Sair</button>
+      </div>
+      <div style={{ padding: '0 20px 16px' }}>
+        <span style={{ display: 'inline-block', padding: '4px 12px', borderRadius: 999, background: C.tealLine, color: C.tealDark, fontSize: 12, fontWeight: 600 }}>
+          {kindLabel.toUpperCase()}
+        </span>
+      </div>
+      {isAdmin && (
+        <div style={{ padding: '0 20px 16px' }}>
+          <button onClick={onSwitchElder} style={{ fontSize: 13, padding: '8px 16px', borderRadius: 999, background: C.paperCard, color: C.teal, border: `1px solid ${C.tealLine}` }}>
+            ↺ Trocar de idoso
+          </button>
+        </div>
+      )}
+      <div style={{ padding: '0 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {items.map((it) => (
+          <button
+            key={it.key}
+            onClick={() => onNavigate(it.key)}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 14, padding: 18, borderRadius: 18, textAlign: 'left', border: it.dark ? 'none' : `1px solid ${C.tealLine}`,
+              background: it.dark ? C.inkBg : C.paperCard, color: it.dark ? C.paper : C.textDark,
+            }}
+          >
+            <div style={{ padding: 12, borderRadius: 12, background: it.dark ? C.amber : C.teal, fontSize: 18 }}>{it.icon}</div>
+            <div>
+              <p style={{ fontWeight: 600, margin: 0 }}>{it.label}</p>
+              <p style={{ fontSize: 13, margin: 0, opacity: 0.75 }}>{it.desc}</p>
+            </div>
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/* ---------- cadastro / convites ---------- */
+function CadastroScreen({ elder, elderId, accountId, onBack }) {
+  const [family, setFamily] = useState([])
+  const [invites, setInvites] = useState([])
+  const [relation, setRelation] = useState(RELATIONS[0])
+  const [lastCode, setLastCode] = useState(null)
+  const [copyStatus, setCopyStatus] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+
+  useEffect(() => { load() }, [elderId])
+
+  async function load() {
+    setLoading(true)
+    const { data: accessRows } = await supabase.from('elder_access').select('*').eq('elder_id', elderId)
+    const { data: profilesData } = await supabase.from('profiles').select('*')
+    const merged = (accessRows || []).map((row) => {
+      const acc = (profilesData || []).find((p) => p.id === row.account_id)
+      return acc ? { accountId: acc.id, name: acc.name, relation: row.relation } : null
+    }).filter(Boolean)
+    setFamily(merged)
+
+    const { data: invitesData } = await supabase.from('invites').select('*').eq('elder_id', elderId)
+    setInvites(invitesData || [])
+    setLoading(false)
+  }
+
+  function genCode() {
+    return Math.random().toString(36).slice(2, 8).toUpperCase()
+  }
+
+  async function generate() {
+    setError('')
+    const code = genCode()
+    const { error: insertError } = await supabase.from('invites').insert({ code, elder_id: elderId, relation })
+    if (insertError) { setError(insertError.message); return }
+    setLastCode({ code, relation })
+    setCopyStatus('')
+    load()
+  }
+
+  function inviteText(code, rel) {
+    return `Oi! Pra acessar o Bio como ${rel.toLowerCase()}, entra no app, toque em "Tenho um código de convite" e use o código: ${code}`
+  }
+
+  async function shareInvite() {
+    const text = inviteText(lastCode.code, lastCode.relation)
+    if (navigator.share) {
+      try { await navigator.share({ title: 'Convite Bio', text }); return } catch {}
+    }
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopyStatus('Copiado! Agora é só colar numa mensagem.')
+    } catch {
+      setCopyStatus('Não consegui copiar automaticamente — copie o código manualmente.')
+    }
+  }
+
+  function whatsappShare() {
+    const text = encodeURIComponent(inviteText(lastCode.code, lastCode.relation))
+    window.open(`https://wa.me/?text=${text}`, '_blank')
+  }
+
+  async function removeMember(accId) {
+    await supabase.from('elder_access').delete().eq('elder_id', elderId).eq('account_id', accId)
+    load()
+  }
+
+  async function removeInvite(code) {
+    await supabase.from('invites').delete().eq('code', code)
+    load()
+  }
+
+  return (
+    <div style={{ minHeight: '100vh', paddingBottom: 60, background: C.paper }}>
+      <TopBar title="Cadastrar família" onBack={onBack} />
+      <div style={{ padding: '0 20px' }}>
+        <div style={{ padding: 18, borderRadius: 18, background: C.paperCard, border: `1px solid ${C.tealLine}`, marginBottom: 20 }}>
+          <p style={{ fontWeight: 600, margin: '0 0 4px', color: C.textDark }}>Convidar pessoa</p>
+          <p style={{ fontSize: 12, margin: '0 0 12px', color: C.textMuted }}>Gere um código e compartilhe — a pessoa cria a própria conta.</p>
+          <select style={inputStyle} value={relation} onChange={(e) => setRelation(e.target.value)}>
+            {RELATIONS.map((r) => <option key={r} value={r}>{r}</option>)}
+          </select>
+          <button onClick={generate} style={{ width: '100%', padding: 12, borderRadius: 12, background: C.teal, color: '#fff', border: 'none', fontWeight: 600 }}>
+            + Gerar código de convite
+          </button>
+          {error && <p style={{ color: C.coral, fontSize: 13 }}>{error}</p>}
+          {lastCode && (
+            <div style={{ marginTop: 14, padding: 14, borderRadius: 12, background: C.tealLine }}>
+              <p style={{ fontSize: 24, fontWeight: 700, letterSpacing: 4, textAlign: 'center', color: C.tealDark, margin: 0, fontFamily: 'monospace' }}>{lastCode.code}</p>
+              <p style={{ fontSize: 12, textAlign: 'center', color: C.tealDark, marginTop: 6 }}>Compartilhe com a pessoa ({lastCode.relation}).</p>
+              <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                <button onClick={whatsappShare} style={{ flex: 1, padding: 10, borderRadius: 10, background: '#25D366', color: '#fff', border: 'none', fontSize: 13, fontWeight: 600 }}>
+                  Enviar por WhatsApp
+                </button>
+                <button onClick={shareInvite} style={{ flex: 1, padding: 10, borderRadius: 10, background: '#fff', color: C.tealDark, border: `1px solid ${C.tealDark}`, fontSize: 13, fontWeight: 600 }}>
+                  Copiar
+                </button>
+              </div>
+              {copyStatus && <p style={{ fontSize: 12, textAlign: 'center', color: C.tealDark, marginTop: 6 }}>{copyStatus}</p>}
+            </div>
+          )}
+        </div>
+
+        {!loading && invites.length > 0 && (
+          <div style={{ marginBottom: 20 }}>
+            <p style={{ fontWeight: 600, margin: '0 0 10px', color: C.textDark }}>Convites aguardando ({invites.length})</p>
+            {invites.map((inv) => (
+              <div key={inv.code} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 14, borderRadius: 14, background: C.paperCard, border: `1px solid ${C.tealLine}`, marginBottom: 8 }}>
+                <div>
+                  <p style={{ fontFamily: 'monospace', fontWeight: 600, margin: 0, color: C.textDark }}>{inv.code}</p>
+                  <p style={{ fontSize: 12, margin: 0, color: C.textMuted }}>{inv.relation} · ainda não usado</p>
+                </div>
+                <button onClick={() => removeInvite(inv.code)} style={{ padding: 8, borderRadius: 999, background: '#F3DAD6', border: 'none' }}>🗑️</button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div>
+          <p style={{ fontWeight: 600, margin: '0 0 10px', color: C.textDark }}>Pessoas cadastradas ({family.length})</p>
+          {loading && <p style={{ fontSize: 13, color: C.textMuted }}>Carregando...</p>}
+          {!loading && family.length === 0 && <p style={{ fontSize: 13, color: C.textMuted }}>Ninguém entrou ainda. Gere um convite acima.</p>}
+          {family.map((m) => (
+            <div key={m.accountId} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 14, borderRadius: 14, background: C.paperCard, border: `1px solid ${C.tealLine}`, marginBottom: 8 }}>
+              <div>
+                <p style={{ fontWeight: 500, margin: 0, color: C.textDark }}>{m.name}</p>
+                <p style={{ fontSize: 12, margin: 0, color: C.textMuted }}>{m.relation}</p>
+              </div>
+              <button onClick={() => removeMember(m.accountId)} style={{ padding: 8, borderRadius: 999, background: '#F3DAD6', border: 'none' }}>🗑️</button>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 /* ---------- app principal ---------- */
 export default function App() {
   const [loading, setLoading] = useState(true)
@@ -324,6 +516,7 @@ export default function App() {
   const [elders, setElders] = useState([])
   const [myElders, setMyElders] = useState([])
   const [currentElderId, setCurrentElderId] = useState(null)
+  const [elderView, setElderView] = useState('home')
 
   useEffect(() => {
     load()
@@ -410,30 +603,44 @@ export default function App() {
 
   const currentElder = elders.find((e) => e.id === currentElderId)
   const kindLabel = profile && profile.kind === 'elder' ? 'sessão do idoso' : profile && profile.kind === 'caregiver' ? 'sessão de cuidador(a)' : 'sessão de administrador'
+  const isAdmin = profile && profile.kind === 'admin'
 
-  // dentro de um idoso — placeholder simples por enquanto (Cadastro, Painel da Família... vêm no próximo passo)
-  return (
-    <div style={{ minHeight: '100vh', background: C.paper }}>
-      <TopBar title={currentElder ? currentElder.name : 'Bio'} onLogout={handleLogout} />
-      <div style={{ padding: 24 }}>
-        <div style={{ display: 'inline-block', padding: '4px 12px', borderRadius: 999, background: C.tealLine, color: C.tealDark, fontSize: 12, fontWeight: 600, marginBottom: 16 }}>
-          {kindLabel.toUpperCase()}
+  function goSwitchElder() {
+    setCurrentElderId(null)
+    setElderView('home')
+  }
+
+  if (elderView === 'cadastro' && isAdmin) {
+    return (
+      <CadastroScreen
+        elder={currentElder}
+        elderId={currentElderId}
+        accountId={session.user.id}
+        onBack={() => setElderView('home')}
+      />
+    )
+  }
+
+  if (elderView === 'familia' || elderView === 'idoso' || elderView === 'cuidadora') {
+    const labels = { familia: 'Painel da Família', idoso: `Tela de ${currentElder ? currentElder.name.split(' ')[0] : 'Idoso'}`, cuidadora: 'Área da Cuidadora' }
+    return (
+      <div style={{ minHeight: '100vh', background: C.paper }}>
+        <TopBar title={labels[elderView]} onBack={() => setElderView('home')} />
+        <div style={{ padding: 24 }}>
+          <p style={{ fontSize: 15, color: C.textMuted }}>Essa tela ainda está sendo construída — chega em breve.</p>
         </div>
-        {profile && profile.kind === 'admin' && (
-          <button
-            onClick={() => setCurrentElderId(null)}
-            style={{ display: 'block', marginBottom: 16, fontSize: 13, padding: '8px 16px', borderRadius: 999, background: C.paperCard, color: C.teal, border: `1px solid ${C.tealLine}` }}
-          >
-            ↺ Trocar de idoso
-          </button>
-        )}
-        <p style={{ fontSize: 18, color: C.textDark }}>
-          Você está em <strong>{currentElder ? currentElder.name : '...'}</strong>, logado como <strong>{profile ? profile.name : '...'}</strong> ({kindLabel}).
-        </p>
-        <p style={{ fontSize: 14, color: C.textMuted, marginTop: 12 }}>
-          As próximas telas (Cadastro, Painel da Família, Assistente...) entram no próximo passo.
-        </p>
       </div>
-    </div>
+    )
+  }
+
+  return (
+    <HomeMenu
+      elder={currentElder}
+      kindLabel={kindLabel}
+      isAdmin={isAdmin}
+      onNavigate={setElderView}
+      onSwitchElder={goSwitchElder}
+      onLogout={handleLogout}
+    />
   )
 }
