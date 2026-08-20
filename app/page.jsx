@@ -1,7 +1,7 @@
 'use client'
 // 'use client' é obrigatório: essa tela usa useState e onClick
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
 import { signUpAdmin, login, redeemInvite, elderLogin, logout } from '@/lib/auth'
 
