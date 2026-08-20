@@ -992,7 +992,12 @@ function AssistantScreen({ elderId, elderName, onBack }) {
       rec.continuous = false
       rec.interimResults = false
       rec.onstart = () => { setListening(true); playBeep(880, 100) }
-      rec.onend = () => { setListening(false); if (handsFreeRef.current) scheduleListen(600) }
+      rec.onend = () => {
+        setListening(false)
+        // único lugar que reagenda a escuta — evita reagendar duas vezes
+        // (onerror + onend disparando quase juntos), que causava o "pisca-pisca"
+        if (handsFreeRef.current) scheduleListen(900)
+      }
       rec.onresult = (e) => { handleCommand(e.results[0][0].transcript) }
       rec.onerror = (e) => {
         setListening(false)
@@ -1001,7 +1006,8 @@ function AssistantScreen({ elderId, elderName, onBack }) {
           reply('Perdi a permissão do microfone. Alguém precisa ativar o modo mãos-livres de novo.')
           return
         }
-        if (handsFreeRef.current) scheduleListen(900)
+        // outros erros (ex: "no-speech", silêncio) não reagendam aqui —
+        // o "onend" que sempre dispara em seguida já cuida disso sozinho
       }
       recognitionRef.current = rec
       rec.start()
