@@ -409,22 +409,26 @@ export default function App() {
   }
 
   const currentElder = elders.find((e) => e.id === currentElderId)
+  const kindLabel = profile && profile.kind === 'elder' ? 'sessão do idoso' : profile && profile.kind === 'caregiver' ? 'sessão de cuidador(a)' : 'sessão de administrador'
 
   // dentro de um idoso — placeholder simples por enquanto (Cadastro, Painel da Família... vêm no próximo passo)
   return (
     <div style={{ minHeight: '100vh', background: C.paper }}>
       <TopBar title={currentElder ? currentElder.name : 'Bio'} onLogout={handleLogout} />
       <div style={{ padding: 24 }}>
+        <div style={{ display: 'inline-block', padding: '4px 12px', borderRadius: 999, background: C.tealLine, color: C.tealDark, fontSize: 12, fontWeight: 600, marginBottom: 16 }}>
+          {kindLabel.toUpperCase()}
+        </div>
         {profile && profile.kind === 'admin' && (
           <button
             onClick={() => setCurrentElderId(null)}
-            style={{ marginBottom: 16, fontSize: 13, padding: '8px 16px', borderRadius: 999, background: C.paperCard, color: C.teal, border: `1px solid ${C.tealLine}` }}
+            style={{ display: 'block', marginBottom: 16, fontSize: 13, padding: '8px 16px', borderRadius: 999, background: C.paperCard, color: C.teal, border: `1px solid ${C.tealLine}` }}
           >
             ↺ Trocar de idoso
           </button>
         )}
         <p style={{ fontSize: 18, color: C.textDark }}>
-          Você está em <strong>{currentElder ? currentElder.name : '...'}</strong>, logado como <strong>{profile ? profile.name : '...'}</strong>.
+          Você está em <strong>{currentElder ? currentElder.name : '...'}</strong>, logado como <strong>{profile ? profile.name : '...'}</strong> ({kindLabel}).
         </p>
         <p style={{ fontSize: 14, color: C.textMuted, marginTop: 12 }}>
           As próximas telas (Cadastro, Painel da Família, Assistente...) entram no próximo passo.
