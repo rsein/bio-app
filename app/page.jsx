@@ -242,6 +242,48 @@ function LoginScreen({ accounts, elders }) {
 
 const RELATIONS = ['Filho(a)', 'Esposa(o)', 'Cuidador(a)', 'Outro familiar']
 
+const DEFAULT_ROUTINE = ['Café da manhã', 'Almoço', 'Banho', 'Passeio', 'Jantar', 'Exercício', 'Fisioterapia']
+const SUGGESTED_ROUTINE = ['Lanche', 'Leitura', 'Oração', 'Meditação', 'Banho de sol', 'Chamada com a família', 'Alongamento', 'Jogo de memória']
+const WEEKDAYS = [
+  ['domingo', 'domingo'], ['segunda', 'segunda-feira'], ['terça', 'terça-feira'], ['terca', 'terça-feira'],
+  ['quarta', 'quarta-feira'], ['quinta', 'quinta-feira'], ['sexta', 'sexta-feira'],
+  ['sábado', 'sábado'], ['sabado', 'sábado'],
+]
+
+function todayKey() {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+function timeNow() {
+  return new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+}
+function parseDateTime(text) {
+  const t = text.toLowerCase()
+  let when = null
+  if (/\bamanh[ãa]\b/.test(t)) when = 'amanhã'
+  else if (/\bhoje\b/.test(t)) when = 'hoje'
+  else { for (const [k, label] of WEEKDAYS) { if (t.includes(k)) { when = label; break } } }
+  let hour = null, minute = 0
+  let m = t.match(/(\d{1,2})[:h](\d{2})/)
+  if (m) { hour = parseInt(m[1], 10); minute = parseInt(m[2], 10) }
+  else { m = t.match(/\bàs?\s*(\d{1,2})\s*h(oras)?\b/); if (m) hour = parseInt(m[1], 10) }
+  return { when, hour, minute }
+}
+function cleanReminderText(text) {
+  return text
+    .replace(/^me lembr[ae]\s*(de|que)?\s*/i, '')
+    .replace(/\bamanh[ãa]\b/gi, '').replace(/\bhoje\b/gi, '')
+    .replace(/\bàs?\s*\d{1,2}([:h]\d{2})?\s*(horas?)?\b/gi, '')
+    .replace(/\b(domingo|segunda(-feira)?|terça(-feira)?|terca(-feira)?|quarta(-feira)?|quinta(-feira)?|sexta(-feira)?|sábado|sabado)\b/gi, '')
+    .replace(/\s{2,}/g, ' ').trim()
+}
+function formatReminder(r) {
+  const parts = []
+  if (r.when_label) parts.push(r.when_label)
+  if (r.hour !== null && r.hour !== undefined) parts.push(`${String(r.hour).padStart(2, '0')}:${String(r.minute || 0).padStart(2, '0')}`)
+  return parts.length ? `${r.text} (${parts.join(', ')})` : r.text
+}
+
 /* ---------- meus idosos ---------- */
 function MeusIdososScreen({ elders, onSelectElder, onAddElder, onLogout }) {
   const [showForm, setShowForm] = useState(false)
@@ -507,6 +549,243 @@ function CadastroScreen({ elder, elderId, accountId, onBack }) {
   )
 }
 
+/* ---------- painel da família ---------- */
+const cardStyle = { padding: 18, borderRadius: 18, background: C.paperCard, border: `1px solid ${C.tealLine}`, marginBottom: 20 }
+const rowStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 12, borderRadius: 12, background: C.paper, marginBottom: 8 }
+const smallBtn = { padding: '8px 14px', borderRadius: 10, border: 'none', fontSize: 13, fontWeight: 600 }
+
+function FamiliaScreen({ elderId, elderName, onBack }) {
+  const [loading, setLoading] = useState(true)
+
+  const [reminders, setReminders] = useState([])
+  const [reminderText, setReminderText] = useState('')
+
+  const [medications, setMedications] = useState([])
+  const [medLogs, setMedLogs] = useState({}) // medicationId -> [{id, time}]
+  const [medName, setMedName] = useState('')
+  const [medDose, setMedDose] = useState('')
+
+  const [routineItems, setRoutineItems] = useState([])
+  const [routineDone, setRoutineDone] = useState({}) // routineItemId -> {logId, done}
+  const [showAddActivity, setShowAddActivity] = useState(false)
+  const [customActivity, setCustomActivity] = useState('')
+
+  useEffect(() => { load() }, [elderId])
+
+  async function load() {
+    setLoading(true)
+    const today = todayKey()
+
+    const { data: remData } = await supabase.from('reminders').select('*').eq('elder_id', elderId).order('created_at')
+    setReminders(remData || [])
+
+    const { data: medData } = await supabase.from('medications').select('*').eq('elder_id', elderId).order('created_at')
+    setMedications(medData || [])
+    if (medData && medData.length > 0) {
+      const medIds = medData.map((m) => m.id)
+      const { data: logsData } = await supabase.from('medication_logs').select('*').in('medication_id', medIds)
+      const grouped = {}
+      ;(logsData || []).forEach((log) => {
+        const logDate = new Date(log.given_at)
+        const logKey = `${logDate.getFullYear()}-${String(logDate.getMonth() + 1).padStart(2, '0')}-${String(logDate.getDate()).padStart(2, '0')}`
+        if (logKey !== today) return
+        if (!grouped[log.medication_id]) grouped[log.medication_id] = []
+        grouped[log.medication_id].push({ id: log.id, time: logDate.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) })
+      })
+      setMedLogs(grouped)
+    } else {
+      setMedLogs({})
+    }
+
+    let { data: routineData } = await supabase.from('routine_items').select('*').eq('elder_id', elderId).order('created_at')
+    if (!routineData || routineData.length === 0) {
+      const seed = DEFAULT_ROUTINE.map((name) => ({ elder_id: elderId, name }))
+      const { data: seeded } = await supabase.from('routine_items').insert(seed).select()
+      routineData = seeded || []
+    }
+    setRoutineItems(routineData || [])
+
+    if (routineData && routineData.length > 0) {
+      const itemIds = routineData.map((r) => r.id)
+      const { data: logsToday } = await supabase.from('routine_logs').select('*').in('routine_item_id', itemIds).eq('date', today)
+      const doneMap = {}
+      ;(logsToday || []).forEach((log) => { doneMap[log.routine_item_id] = { logId: log.id, done: log.done } })
+      setRoutineDone(doneMap)
+    }
+
+    setLoading(false)
+  }
+
+  // lembretes
+  async function addReminder() {
+    if (!reminderText.trim()) return
+    const dt = parseDateTime(reminderText)
+    const cleaned = cleanReminderText(reminderText) || reminderText
+    await supabase.from('reminders').insert({ elder_id: elderId, text: cleaned, when_label: dt.when, hour: dt.hour, minute: dt.minute, created_by: 'família', done: false })
+    setReminderText('')
+    load()
+  }
+  async function toggleReminder(r) {
+    await supabase.from('reminders').update({ done: !r.done }).eq('id', r.id)
+    load()
+  }
+
+  // remédios
+  async function addMedication() {
+    if (!medName.trim()) return
+    await supabase.from('medications').insert({ elder_id: elderId, name: medName.trim(), dose: medDose.trim() })
+    setMedName(''); setMedDose('')
+    load()
+  }
+  async function removeMedication(id) {
+    await supabase.from('medications').delete().eq('id', id)
+    load()
+  }
+  async function markGiven(medId) {
+    await supabase.from('medication_logs').insert({ medication_id: medId, given_at: new Date().toISOString(), logged_by: 'família' })
+    load()
+  }
+  async function removeDose(logId) {
+    await supabase.from('medication_logs').delete().eq('id', logId)
+    load()
+  }
+
+  // rotina
+  async function toggleRoutine(item) {
+    const today = todayKey()
+    const current = routineDone[item.id]
+    if (current && current.logId) {
+      await supabase.from('routine_logs').update({ done: !current.done }).eq('id', current.logId)
+    } else {
+      await supabase.from('routine_logs').insert({ elder_id: elderId, routine_item_id: item.id, date: today, done: true })
+    }
+    load()
+  }
+  async function addSuggested(name) {
+    await supabase.from('routine_items').insert({ elder_id: elderId, name })
+    load()
+  }
+  async function submitCustomActivity() {
+    if (!customActivity.trim()) return
+    await supabase.from('routine_items').insert({ elder_id: elderId, name: customActivity.trim() })
+    setCustomActivity(''); setShowAddActivity(false)
+    load()
+  }
+  async function removeRoutineItem(id) {
+    await supabase.from('routine_items').delete().eq('id', id)
+    load()
+  }
+
+  const routineNames = routineItems.map((r) => r.name.toLowerCase())
+  const availableSuggestions = SUGGESTED_ROUTINE.filter((s) => !routineNames.includes(s.toLowerCase()))
+
+  return (
+    <div style={{ minHeight: '100vh', paddingBottom: 60, background: C.paper }}>
+      <TopBar title="Painel da família" onBack={onBack} />
+      <div style={{ padding: '0 20px' }}>
+        {loading && <p style={{ fontSize: 13, color: C.textMuted }}>Carregando...</p>}
+
+        {/* lembretes */}
+        <div style={cardStyle}>
+          <p style={{ fontWeight: 600, margin: '0 0 10px', color: C.textDark }}>🔔 Lembretes</p>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+            <input
+              style={{ ...inputStyle, marginBottom: 0, flex: 1 }}
+              placeholder="Ex: consulta amanhã às 10h"
+              value={reminderText}
+              onChange={(e) => setReminderText(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') addReminder() }}
+            />
+            <button onClick={addReminder} style={{ ...smallBtn, background: C.teal, color: '#fff' }}>Add</button>
+          </div>
+          {reminders.length === 0 && <p style={{ fontSize: 13, color: C.textMuted }}>Nenhum lembrete ainda.</p>}
+          {reminders.map((r) => (
+            <button key={r.id} onClick={() => toggleReminder(r)} style={{ ...rowStyle, width: '100%', border: 'none', textAlign: 'left', cursor: 'pointer' }}>
+              <span style={{ fontSize: 14, color: r.done ? C.textMuted : C.textDark, textDecoration: r.done ? 'line-through' : 'none' }}>
+                {r.done ? '✅ ' : '⬜ '}{formatReminder(r)}
+              </span>
+              <span style={{ fontSize: 11, color: C.textMuted }}>{r.created_by}</span>
+            </button>
+          ))}
+        </div>
+
+        {/* remédios */}
+        <div style={cardStyle}>
+          <p style={{ fontWeight: 600, margin: '0 0 10px', color: C.textDark }}>💊 Remédios</p>
+          {medications.map((med) => {
+            const doses = medLogs[med.id] || []
+            return (
+              <div key={med.id} style={{ padding: 12, borderRadius: 12, background: C.paper, marginBottom: 8 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <p style={{ fontWeight: 500, margin: 0, fontSize: 14, color: C.textDark }}>{med.name}</p>
+                    {med.dose && <p style={{ fontSize: 12, margin: 0, color: C.textMuted }}>{med.dose}</p>}
+                  </div>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button onClick={() => markGiven(med.id)} style={{ ...smallBtn, background: '#3F8A5E', color: '#fff' }}>Dei agora</button>
+                    <button onClick={() => removeMedication(med.id)} style={{ padding: 8, borderRadius: 999, background: '#F3DAD6', border: 'none' }}>🗑️</button>
+                  </div>
+                </div>
+                {doses.length > 0 && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                    {doses.map((d) => (
+                      <span key={d.id} style={{ fontSize: 12, padding: '4px 10px', borderRadius: 999, background: '#DCEBE0', color: C.tealDark }}>
+                        {d.time} <button onClick={() => removeDose(d.id)} style={{ border: 'none', background: 'none', marginLeft: 4, cursor: 'pointer' }}>✕</button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <input style={{ ...inputStyle, marginBottom: 0, flex: 1 }} placeholder="Nome do remédio" value={medName} onChange={(e) => setMedName(e.target.value)} />
+            <input style={{ ...inputStyle, marginBottom: 0, width: 90 }} placeholder="Dose" value={medDose} onChange={(e) => setMedDose(e.target.value)} />
+            <button onClick={addMedication} style={{ ...smallBtn, background: C.teal, color: '#fff' }}>+</button>
+          </div>
+        </div>
+
+        {/* rotina */}
+        <div style={cardStyle}>
+          <p style={{ fontWeight: 600, margin: '0 0 10px', color: C.textDark }}>✅ Rotina de hoje</p>
+          {routineItems.map((item) => {
+            const state = routineDone[item.id]
+            const done = state ? state.done : false
+            return (
+              <div key={item.id} style={{ ...rowStyle }}>
+                <button onClick={() => toggleRoutine(item)} style={{ flex: 1, textAlign: 'left', border: 'none', background: 'none', cursor: 'pointer', fontSize: 14, color: done ? C.textMuted : C.textDark }}>
+                  {done ? '✅' : '⬜'} {item.name}
+                </button>
+                <button onClick={() => removeRoutineItem(item.id)} style={{ border: 'none', background: 'none', color: C.textMuted, cursor: 'pointer' }}>✕</button>
+              </div>
+            )
+          })}
+          {!showAddActivity ? (
+            <button onClick={() => setShowAddActivity(true)} style={{ width: '100%', padding: 12, borderRadius: 12, background: C.tealLine, color: C.tealDark, border: 'none', fontWeight: 600, marginTop: 4 }}>
+              + Adicionar atividade
+            </button>
+          ) : (
+            <div style={{ marginTop: 8 }}>
+              {availableSuggestions.length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+                  {availableSuggestions.map((s) => (
+                    <button key={s} onClick={() => addSuggested(s)} style={{ fontSize: 12, padding: '6px 12px', borderRadius: 999, background: C.tealLine, color: C.tealDark, border: 'none' }}>+ {s}</button>
+                  ))}
+                </div>
+              )}
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input style={{ ...inputStyle, marginBottom: 0, flex: 1 }} placeholder="Ou digite uma atividade nova" value={customActivity} onChange={(e) => setCustomActivity(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') submitCustomActivity() }} />
+                <button onClick={submitCustomActivity} style={{ ...smallBtn, background: C.teal, color: '#fff' }}>+</button>
+                <button onClick={() => setShowAddActivity(false)} style={{ ...smallBtn, background: C.tealLine, color: C.tealDark }}>✕</button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 /* ---------- app principal ---------- */
 export default function App() {
   const [loading, setLoading] = useState(true)
@@ -621,8 +900,12 @@ export default function App() {
     )
   }
 
-  if (elderView === 'familia' || elderView === 'idoso' || elderView === 'cuidadora') {
-    const labels = { familia: 'Painel da Família', idoso: `Tela de ${currentElder ? currentElder.name.split(' ')[0] : 'Idoso'}`, cuidadora: 'Área da Cuidadora' }
+  if (elderView === 'familia') {
+    return <FamiliaScreen elderId={currentElderId} elderName={currentElder ? currentElder.name : ''} onBack={() => setElderView('home')} />
+  }
+
+  if (elderView === 'idoso' || elderView === 'cuidadora') {
+    const labels = { idoso: `Tela de ${currentElder ? currentElder.name.split(' ')[0] : 'Idoso'}`, cuidadora: 'Área da Cuidadora' }
     return (
       <div style={{ minHeight: '100vh', background: C.paper }}>
         <TopBar title={labels[elderView]} onBack={() => setElderView('home')} />
