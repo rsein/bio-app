@@ -610,7 +610,7 @@ function FamiliaScreen({ elderId, elderName, onBack }) {
 
     let { data: routineData, error: routineErr } = await supabase.from('routine_items').select('*').eq('elder_id', elderId).order('created_at')
     checkError(routineErr, 'carregar rotina')
-    if (!routineData || routineData.length === 0) {
+    if (!routineErr && (!routineData || routineData.length === 0)) {
       const seed = DEFAULT_ROUTINE.map((name) => ({ elder_id: elderId, name }))
       const { data: seeded, error: seedErr } = await supabase.from('routine_items').insert(seed).select()
       checkError(seedErr, 'criar rotina padrão')
@@ -776,7 +776,7 @@ function FamiliaScreen({ elderId, elderName, onBack }) {
 
         {/* rotina */}
         <div style={cardStyle}>
-          <p style={{ fontWeight: 600, margin: '0 0 10px', color: C.textDark }}>✅ Rotina de hoje</p>
+          <p style={{ fontWeight: 600, margin: '0 0 10px', color: C.textDark }}>✅ Rotina de hoje ({routineItems.length})</p>
           {routineItems.map((item) => {
             const state = routineDone[item.id]
             const done = state ? state.done : false
