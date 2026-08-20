@@ -556,6 +556,7 @@ const smallBtn = { padding: '8px 14px', borderRadius: 10, border: 'none', fontSi
 
 function FamiliaScreen({ elderId, elderName, onBack }) {
   const [loading, setLoading] = useState(true)
+  const [dbError, setDbError] = useState('')
 
   const [reminders, setReminders] = useState([])
   const [reminderText, setReminderText] = useState('')
@@ -572,14 +573,24 @@ function FamiliaScreen({ elderId, elderName, onBack }) {
 
   useEffect(() => { load() }, [elderId])
 
+  function checkError(error, action) {
+    if (error) {
+      console.error(action, error)
+      setDbError(`Erro em "${action}": ${error.message}`)
+      return true
+    }
+    return false
+  }
+
   async function load() {
     setLoading(true)
     const today = todayKey()
 
-    const { data: remData } = await supabase.from('reminders').select('*').eq('elder_id', elderId).order('created_at')
-    setReminders(remData || [])
+    const { data: remData, error: remErr } = await supabase.from('reminders').select('*').eq('elder_id', elderId).order('created_at')
+    if (!checkError(remErr, 'carregar lembretes')) setReminders(remData || [])
 
-    const { data: medData } = await supabase.from('medications').select('*').eq('elder_id', elderId).order('created_at')
+    const { data: medData, error: medErr } = await supabase.from('medications').select('*').eq('elder_id', elderId).order('created_at')
+    checkError(medErr, 'carregar remédios')
     setMedications(medData || [])
     if (medData && medData.length > 0) {
       const medIds = medData.map((m) => m.id)
@@ -597,10 +608,12 @@ function FamiliaScreen({ elderId, elderName, onBack }) {
       setMedLogs({})
     }
 
-    let { data: routineData } = await supabase.from('routine_items').select('*').eq('elder_id', elderId).order('created_at')
+    let { data: routineData, error: routineErr } = await supabase.from('routine_items').select('*').eq('elder_id', elderId).order('created_at')
+    checkError(routineErr, 'carregar rotina')
     if (!routineData || routineData.length === 0) {
       const seed = DEFAULT_ROUTINE.map((name) => ({ elder_id: elderId, name }))
-      const { data: seeded } = await supabase.from('routine_items').insert(seed).select()
+      const { data: seeded, error: seedErr } = await supabase.from('routine_items').insert(seed).select()
+      checkError(seedErr, 'criar rotina padrão')
       routineData = seeded || []
     }
     setRoutineItems(routineData || [])
@@ -621,32 +634,38 @@ function FamiliaScreen({ elderId, elderName, onBack }) {
     if (!reminderText.trim()) return
     const dt = parseDateTime(reminderText)
     const cleaned = cleanReminderText(reminderText) || reminderText
-    await supabase.from('reminders').insert({ elder_id: elderId, text: cleaned, when_label: dt.when, hour: dt.hour, minute: dt.minute, created_by: 'família', done: false })
+    const { error } = await supabase.from('reminders').insert({ elder_id: elderId, text: cleaned, when_label: dt.when, hour: dt.hour, minute: dt.minute, created_by: 'família', done: false })
+    if (checkError(error, 'adicionar lembrete')) return
     setReminderText('')
     load()
   }
   async function toggleReminder(r) {
-    await supabase.from('reminders').update({ done: !r.done }).eq('id', r.id)
+    const { error } = await supabase.from('reminders').update({ done: !r.done }).eq('id', r.id)
+    if (checkError(error, 'marcar lembrete')) return
     load()
   }
 
   // remédios
   async function addMedication() {
     if (!medName.trim()) return
-    await supabase.from('medications').insert({ elder_id: elderId, name: medName.trim(), dose: medDose.trim() })
+    const { error } = await supabase.from('medications').insert({ elder_id: elderId, name: medName.trim(), dose: medDose.trim() })
+    if (checkError(error, 'adicionar remédio')) return
     setMedName(''); setMedDose('')
     load()
   }
   async function removeMedication(id) {
-    await supabase.from('medications').delete().eq('id', id)
+    const { error } = await supabase.from('medications').delete().eq('id', id)
+    if (checkError(error, 'remover remédio')) return
     load()
   }
   async function markGiven(medId) {
-    await supabase.from('medication_logs').insert({ medication_id: medId, given_at: new Date().toISOString(), logged_by: 'família' })
+    const { error } = await supabase.from('medication_logs').insert({ medication_id: medId, given_at: new Date().toISOString(), logged_by: 'família' })
+    if (checkError(error, 'marcar remédio como dado')) return
     load()
   }
   async function removeDose(logId) {
-    await supabase.from('medication_logs').delete().eq('id', logId)
+    const { error } = await supabase.from('medication_logs').delete().eq('id', logId)
+    if (checkError(error, 'remover dose')) return
     load()
   }
 
@@ -654,25 +673,30 @@ function FamiliaScreen({ elderId, elderName, onBack }) {
   async function toggleRoutine(item) {
     const today = todayKey()
     const current = routineDone[item.id]
+    let error
     if (current && current.logId) {
-      await supabase.from('routine_logs').update({ done: !current.done }).eq('id', current.logId)
+      ;({ error } = await supabase.from('routine_logs').update({ done: !current.done }).eq('id', current.logId))
     } else {
-      await supabase.from('routine_logs').insert({ elder_id: elderId, routine_item_id: item.id, date: today, done: true })
+      ;({ error } = await supabase.from('routine_logs').insert({ elder_id: elderId, routine_item_id: item.id, date: today, done: true }))
     }
+    if (checkError(error, 'marcar rotina')) return
     load()
   }
   async function addSuggested(name) {
-    await supabase.from('routine_items').insert({ elder_id: elderId, name })
+    const { error } = await supabase.from('routine_items').insert({ elder_id: elderId, name })
+    if (checkError(error, 'adicionar atividade sugerida')) return
     load()
   }
   async function submitCustomActivity() {
     if (!customActivity.trim()) return
-    await supabase.from('routine_items').insert({ elder_id: elderId, name: customActivity.trim() })
+    const { error } = await supabase.from('routine_items').insert({ elder_id: elderId, name: customActivity.trim() })
+    if (checkError(error, 'adicionar atividade')) return
     setCustomActivity(''); setShowAddActivity(false)
     load()
   }
   async function removeRoutineItem(id) {
-    await supabase.from('routine_items').delete().eq('id', id)
+    const { error } = await supabase.from('routine_items').delete().eq('id', id)
+    if (checkError(error, 'remover atividade')) return
     load()
   }
 
@@ -684,6 +708,11 @@ function FamiliaScreen({ elderId, elderName, onBack }) {
       <TopBar title="Painel da família" onBack={onBack} />
       <div style={{ padding: '0 20px' }}>
         {loading && <p style={{ fontSize: 13, color: C.textMuted }}>Carregando...</p>}
+        {dbError && (
+          <div style={{ padding: 12, borderRadius: 12, background: '#F3DAD6', color: C.coral, fontSize: 13, marginBottom: 16 }}>
+            ⚠️ {dbError}
+          </div>
+        )}
 
         {/* lembretes */}
         <div style={cardStyle}>
